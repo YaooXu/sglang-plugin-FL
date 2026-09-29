@@ -1,4 +1,6 @@
-"""Ascend/NPU patch for SGLang attention backend wrapper.
+# Author: liyan <yan.l@pku.edu.cn>
+
+"""Ascend/NPU compatibility patch for older SGLang attention wrappers.
 
 Ports the source edit from
 ``sglang/srt/layers/attention/attention_registry.py``: on NPU the CUDA-only
@@ -9,6 +11,9 @@ running at the top of the ``mambaish_config`` block.
 ``attn_backend_wrapper`` is a module-level function that ``model_runner``
 imports by name (``from ... import attn_backend_wrapper``). We therefore rebind
 it both on ``attention_registry`` and, if already imported, on ``model_runner``.
+
+Current SGLang already defers CUDA-only imports on NPU and adds the MiniMax
+sparse attention wrapper. Keep that implementation intact when it is present.
 """
 
 from __future__ import annotations
@@ -24,6 +29,15 @@ def patch_attn_backend_wrapper() -> None:
         from sglang.srt.layers.attention import attention_registry as ar
     except Exception as e:
         logger.warning("Ascend attn_backend_wrapper patch skipped: %s", e)
+        return
+
+    if callable(getattr(ar, "hybrid_gdn_config", None)) and callable(
+        getattr(ar, "mambaish_config", None)
+    ):
+        logger.info(
+            "Ascend attn_backend_wrapper patch skipped: SGLang has the current "
+            "hybrid attention API"
+        )
         return
 
     def attn_backend_wrapper(runner, full_attn_backend):

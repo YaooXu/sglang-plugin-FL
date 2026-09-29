@@ -300,8 +300,9 @@ class PlatformFL(SRTPlatform):
     def support_piecewise_cuda_graph(self) -> bool:
         return self._device_type == "cuda"
 
-    def is_pin_memory_available(self) -> bool:
-        return self._device_type in ("cuda", "npu", "xpu", "musa", "tsingmicro")
+    def is_pin_memory_available(self, device=None) -> bool:
+        device_type = self._device_type if device is None else torch.device(device).type
+        return device_type in ("cuda", "npu", "xpu", "musa", "tsingmicro")
 
     def supports_fp8(self) -> bool:
         if self._device_type == "cuda":
@@ -341,11 +342,12 @@ class PlatformFL(SRTPlatform):
     # ------------------------------------------------------------------
 
     def get_dispatch_key_name(self) -> str:
-        """Return dispatch key for MultiPlatformOp OOT lookup.
-
-        Returns "oot" — our AROUND hook on dispatch_forward() intercepts
-        before upstream's single-key lookup and does multi-backend resolution.
-        """
+        """Select native Ascend fused ops; retain the OOT key elsewhere."""
+        # Newer SGLang fused ops use BaseFusedOp directly, bypassing the old
+        # MultiPlatformOp AROUND hook. Ascend must select forward_npu there;
+        # falling back to forward_native uses CPU-oriented MoE data layouts.
+        if self._device_type == "npu":
+            return "npu"
         return "oot"
 
     # ------------------------------------------------------------------

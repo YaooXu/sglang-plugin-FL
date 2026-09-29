@@ -10,6 +10,8 @@ Huawei NPU:
 import logging
 
 from .patches.attention_registry import patch_attn_backend_wrapper
+from .patches.minimax_m3_kv_pool import patch_minimax_m3_kv_pool
+from .patches.minimax_m3_moe import patch_minimax_m3_moe_activation
 from .patches.qwen_vl_processor import patch_qwen_vl_processor
 from .patches.scheduler_pp import (
     patch_pp_launch_batch_sync,
@@ -31,5 +33,7 @@ def apply_ascend_patches() -> None:
     patch_pp_launch_batch_sync()
     patch_attn_backend_wrapper()
     patch_qwen_vl_processor()
+    patch_minimax_m3_moe_activation()
+    patch_minimax_m3_kv_pool()
 
 apply_ascend_patches()
