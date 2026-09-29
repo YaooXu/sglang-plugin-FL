@@ -38,6 +38,7 @@ def _conv_update_bf16_four_kernel(
     C: tl.constexpr,
     SLOTS: tl.constexpr,
     BLOCK_C: tl.constexpr,
+    COALESCED_WEIGHT: tl.constexpr,
 ):
     # Snapshot selected slots before launching, so duplicate padding indices
     # never read a state concurrently modified by another request program.
@@ -56,10 +57,20 @@ def _conv_update_bf16_four_kernel(
     h1 = h1_bf16.to(tl.float32)
     h2 = h2_bf16.to(tl.float32)
     x = x_bf16.to(tl.float32)
-    w0 = tl.load(W + cols, active, other=0).to(tl.float32)
-    w1 = tl.load(W + cols + C, active, other=0).to(tl.float32)
-    w2 = tl.load(W + cols + 2 * C, active, other=0).to(tl.float32)
-    w3 = tl.load(W + cols + 3 * C, active, other=0).to(tl.float32)
+    if COALESCED_WEIGHT:
+        packed = tl.load(
+            W + cols[:, None] * 4 + tl.arange(0, 4)[None, :],
+            active[:, None],
+            other=0,
+        ).to(tl.float32)
+        even, odd = tl.split(tl.reshape(packed, (BLOCK_C, 2, 2)))
+        w0, w2 = tl.split(even)
+        w1, w3 = tl.split(odd)
+    else:
+        w0 = tl.load(W + cols, active, other=0).to(tl.float32)
+        w1 = tl.load(W + cols + C, active, other=0).to(tl.float32)
+        w2 = tl.load(W + cols + 2 * C, active, other=0).to(tl.float32)
+        w3 = tl.load(W + cols + 3 * C, active, other=0).to(tl.float32)
     # Match torch BF16 mul -> native sum -> BF16 SiLU.  Omitting either
     # BF16 conversion changes the reference arithmetic and is not allowed.
     p0 = _bf16_round_f32(h0 * w0)
@@ -74,8 +85,8 @@ def _conv_update_bf16_four_kernel(
     tl.store(STATES + state_off + 2 * C, x_bf16, active)
 
 
-def fused_decode_conv(x, states, transposed_weight, indices):
-    """Production decode path: contiguous [4, C] weights and 2048-channel tiles."""
+def fused_decode_conv(x, states, weight, indices, coalesced_weight=False):
+    """Production decode path with optional coalesced four-tap weight loads."""
     batch, channels = x.shape
     output = torch.empty_like(x)
     selected = states[indices]
@@ -84,12 +95,13 @@ def fused_decode_conv(x, states, transposed_weight, indices):
         x,
         selected,
         states,
-        transposed_weight,
+        weight,
         indices,
         output,
         C=channels,
         SLOTS=states.shape[0],
         BLOCK_C=block_channels,
+        COALESCED_WEIGHT=coalesced_weight,
         num_warps=1,
         enable_fp_fusion=False,
     )
@@ -203,7 +215,8 @@ def patch_qwen36_causal_conv_decode_fused():
         indices = self.forward_metadata.mamba_cache_indices
         if not _supported(mixed_qkv, states, layer, forward_batch, indices):
             return original(self, layer, forward_batch, mixed_qkv, a, b, **kwargs)
-        weight = _transposed_weight(layer)
+        coalesced_weight = os.getenv("SGLANG_FL_CONV_COALESCED_WEIGHT", "0") == "1"
+        weight = layer.conv_weights if coalesced_weight else _transposed_weight(layer)
         if not getattr(self, "_sglang_fl_fused_conv_logged", False):
             logger.info(
                 "Fused BF16 decode convolution active: input=%s pool=%s",
@@ -211,7 +224,9 @@ def patch_qwen36_causal_conv_decode_fused():
                 tuple(states.shape),
             )
             self._sglang_fl_fused_conv_logged = True
-        mixed_qkv = fused_decode_conv(mixed_qkv, states, weight, indices)
+        mixed_qkv = fused_decode_conv(
+            mixed_qkv, states, weight, indices, coalesced_weight=coalesced_weight
+        )
         query, key, value = torch.split(
             mixed_qkv, [layer.q_dim, layer.k_dim, layer.v_dim], dim=-1
         )

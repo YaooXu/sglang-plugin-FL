@@ -35,6 +35,7 @@ from __future__ import annotations
 import functools
 import inspect
 import logging
+import os
 import sys
 from collections.abc import Sequence
 from numbers import Integral
@@ -48,6 +49,20 @@ logger = logging.getLogger(__name__)
 _QWEN36_CONV_SHAPES = frozenset({(4096, 4), (5120, 4)})
 _PATCH_MARKER = "_sglang_fl_qwen36_prefill"
 _BACKEND_MODULE = "sglang.srt.hardware_backend.npu.attention.ascend_gdn_backend"
+
+
+def _native_silu_enabled(activation: Optional[str], tokens: int) -> bool:
+    return (
+        os.getenv("SGLANG_FL_NATIVE_CONV_SILU", "0") == "1"
+        and activation in ("silu", "swish")
+        and tokens >= 2048
+    )
+
+
+def _apply_native_silu(out: torch.Tensor) -> torch.Tensor:
+    import torch_npu
+
+    return torch_npu.npu_silu(out)
 
 
 class _SingleSequenceMetadata(NamedTuple):
@@ -244,6 +259,7 @@ def _run_single_sequence(
         bias = bias.contiguous()
 
     state = conv_states[metadata.cache_index].unsqueeze(0)
+    native_silu = _native_silu_enabled(activation, metadata.valid_tokens)
     out, _ = native_fn(
         x[..., : metadata.valid_tokens],
         weight,
@@ -251,8 +267,10 @@ def _run_single_sequence(
         initial_states=state if metadata.use_initial_state else None,
         return_final_states=True,
         final_states_out=state,
-        activation=activation,
+        activation=None if native_silu else activation,
     )
+    if native_silu:
+        out = _apply_native_silu(out)
     trailing_tokens = x.shape[-1] - metadata.valid_tokens
     if trailing_tokens:
         # Keep the original B=1 padding operators; this is structural cleanup,
@@ -291,14 +309,17 @@ def _run_equal_length_batched(
         if metadata.use_initial_state
         else None
     )
+    native_silu = _native_silu_enabled(activation, metadata.sequence_length)
     dense_out, final_states = native_fn(
         dense_x,
         weight,
         bias,
         initial_states=initial_states,
         return_final_states=True,
-        activation=activation,
+        activation=None if native_silu else activation,
     )
+    if native_silu:
+        dense_out = _apply_native_silu(dense_out)
     conv_states.index_copy_(0, cache_indices, final_states)
 
     packed_out = dense_out.transpose(0, 1).contiguous().view(dim, metadata.valid_tokens)

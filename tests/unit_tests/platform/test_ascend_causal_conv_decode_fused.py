@@ -79,6 +79,11 @@ class TestAscendCausalConvDecodeFused(unittest.TestCase):
             indices,
         )
 
+    def candidate_coalesced(self, x, states, weight, indices):
+        return self.mod.fused_decode_conv(
+            x, states, weight, indices, coalesced_weight=True
+        )
+
     def assertBitsEqual(self, actual, expected):
         self.assertTrue(
             torch.equal(
@@ -170,7 +175,7 @@ class TestAscendCausalConvDecodeFused(unittest.TestCase):
                         torch.zeros(
                             (2, 65, 3, channels), dtype=torch.bfloat16, device="npu"
                         )
-                        for _ in range(2)
+                        for _ in range(3)
                     ]
                     states = [pool[1] for pool in pools]
                     initial = self.random((65, 3, channels))
@@ -188,9 +193,12 @@ class TestAscendCausalConvDecodeFused(unittest.TestCase):
                             torch.zeros(padding, dtype=torch.int64),
                         )
                     ).to("npu")
-                    graphs, outputs = [torch.npu.NPUGraph(), torch.npu.NPUGraph()], []
+                    graphs = [torch.npu.NPUGraph() for _ in range(3)]
+                    outputs = []
                     for graph, state, fn in zip(
-                        graphs, states, (self.control, self.candidate)
+                        graphs,
+                        states,
+                        (self.control, self.candidate, self.candidate_coalesced),
                     ):
                         with torch.npu.graph(graph):
                             outputs.append(fn(x, state, weight, indices))
@@ -208,8 +216,11 @@ class TestAscendCausalConvDecodeFused(unittest.TestCase):
                         for graph in graphs:
                             graph.replay()
                         torch.npu.synchronize()
-                        self.assertBitsEqual(outputs[0][:valid], outputs[1][:valid])
-                        self.assertBitsEqual(states[0][1:], states[1][1:])
+                        for candidate in (1, 2):
+                            self.assertBitsEqual(
+                                outputs[0][:valid], outputs[candidate][:valid]
+                            )
+                            self.assertBitsEqual(states[0][1:], states[candidate][1:])
                         for pool in pools:
                             self.assertFalse(bool(torch.any(pool[0].cpu())))
 

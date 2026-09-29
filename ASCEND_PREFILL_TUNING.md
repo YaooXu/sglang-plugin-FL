@@ -49,3 +49,48 @@ TTFT/TPOT and total/output throughput. Count unique implementation names in
 `flaggems_ops.log`, frozen before extra quality/profiling requests. One-time
 `FIA_TND_FAST_HIT`, `GATING24_FAST_HIT` and `PREFILL_NZ_FAST_HIT` messages confirm
 dispatch, not operator counts; ranks and logging handlers may duplicate them.
+
+## Opt-in 27B 16K/1K graph combination
+
+For the measured 27B 16K/1K, TP2, C64 configuration only, the following
+additional switches can be enabled together with the three 27B switches above:
+
+```bash
+export SGLANG_FL_FLA_SINGLE_SOLVE=1
+export SGLANG_FL_FLA_HYBRID_CHAIN=1
+export SGLANG_FL_NATIVE_CONV_SILU=1
+export SGLANG_FL_CONV_COALESCED_WEIGHT=1
+export SGLANG_FL_QWEN36_GRAPH_SYNC=1
+export TRITON_ALL_BLOCKS_PARALLEL=1
+```
+
+Use page size 256 and a Triton cache **separate** from ABP-disabled runs;
+`TRITON_ALL_BLOCKS_PARALLEL` is not reliably part of the cache key in this
+runtime. Restart workers when changing these switches. For the other seven
+model/length cases, leave the five new plugin switches off and use the original
+page size 128 and ABP-disabled cache. The graph and convolution switches are
+not inherently limited to 16K, so this deployment scope matters.
+
+The FLA patch bypasses variable-length indexing only for a single fresh BF16
+16K segment with the exact 27B GDN shapes; W/U retain the installed variable-
+length kernels. The prefill convolution separates native SiLU from the CANN
+convolution for sufficiently long inputs. Decode convolution reads four taps
+per channel together from the original row-major weight, avoiding a captured
+transpose. In text-only non-speculative decode, mRoPE positions come from the
+NPU positions tensor, and graph replay uses SGLang's CPU length mirror. A
+fresh completion event gates the next task-handle update before it can overlap
+the preceding replay. Unsupported modes use the original methods.
+
+On the pinned runtime, two clean-code 27B 16K/1K repeats measured 4113.394 and
+4115.659 total tok/s versus a same-die 3942.511 baseline (+4.33%/+4.39%).
+All seven 1K/4K/16K quality prompts matched a fresh page256 baseline for 128
+output tokens each. Forcing these switches on two 64K prompts is outside the
+measured deployment scope and changed their continuations; keep the new
+switches off for 64K. With the production 64K settings (page128, ABP off,
+new switches off), nine 27B quality outputs matched a same-configuration
+baseline token for token. The target performance FlagGems inventory was 40
+unique implementations versus 39 in the baseline, with no operator removed.
+These are configuration-specific measurements, not a claim of general speedup
+or bitwise equivalence outside the tested corpus. Enabling the new switches
+on 35B changed two forced-continuation 64K outputs; keep them off for 35B
+pending separate correctness work.
