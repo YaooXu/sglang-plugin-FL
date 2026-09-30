@@ -17,6 +17,7 @@ from .patches.minimax_m3_image import (
     patch_minimax_m3_image_preprocess_device,
     patch_minimax_m3_vision_rope_compile,
 )
+from .patches.minimax_m3_indexer import patch_ascend_minimax_vector_indexer
 from .patches.minimax_m3_kv_pool import patch_minimax_m3_kv_pool
 from .patches.minimax_m3_moe import (
     patch_minimax_m3_moe_activation,
@@ -51,6 +52,7 @@ def apply_ascend_patches() -> None:
     patch_ascend_torch_sampling()
     patch_ascend_graph_updates()
     patch_ascend_graph_stages()
+    patch_ascend_minimax_vector_indexer()
     patch_minimax_m3_moe_activation()
     patch_minimax_m3_w8a8_moe_offsets()
     patch_minimax_m3_w8a8_quant_targets()
