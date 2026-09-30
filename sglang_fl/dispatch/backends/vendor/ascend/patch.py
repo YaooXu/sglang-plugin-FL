@@ -10,6 +10,7 @@ Huawei NPU:
 import logging
 
 from .patches.attention_registry import patch_attn_backend_wrapper
+from .patches.graph_stages import patch_ascend_graph_stages
 from .patches.minimax_m3_image import (
     patch_minimax_m3_image_preprocess_device,
     patch_minimax_m3_vision_rope_compile,
@@ -43,6 +44,7 @@ def apply_ascend_patches() -> None:
     patch_attn_backend_wrapper()
     patch_qwen_vl_processor()
     patch_ascend_torch_sampling()
+    patch_ascend_graph_stages()
     patch_minimax_m3_moe_activation()
     patch_minimax_m3_w8a8_moe_offsets()
     patch_minimax_m3_w8a8_quant_targets()
