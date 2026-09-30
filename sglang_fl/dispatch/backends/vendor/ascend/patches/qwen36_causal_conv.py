@@ -290,6 +290,8 @@ def _run_equal_length_batched(
     conv_states: torch.Tensor,
     activation: Optional[str],
     metadata: _BatchMetadata,
+    *,
+    native_metadata: bool = False,
 ) -> torch.Tensor:
     """Execute one dense batched native convolution and repack its output."""
     if x.stride(-1) != 1:
@@ -310,6 +312,23 @@ def _run_equal_length_batched(
         else None
     )
     native_silu = _native_silu_enabled(activation, metadata.sequence_length)
+    native_kwargs = {}
+    if native_metadata:
+        # Newer SDKs require lengths and initial-state flags for state gathering.
+        native_kwargs = {
+            "seqlens": torch.full(
+                (metadata.batch_size,),
+                metadata.sequence_length,
+                dtype=torch.int32,
+                device=x.device,
+            ),
+            "has_initial_state": torch.full(
+                (metadata.batch_size,),
+                metadata.use_initial_state,
+                dtype=torch.bool,
+                device=x.device,
+            ),
+        }
     dense_out, final_states = native_fn(
         dense_x,
         weight,
@@ -317,6 +336,7 @@ def _run_equal_length_batched(
         initial_states=initial_states,
         return_final_states=True,
         activation=None if native_silu else activation,
+        **native_kwargs,
     )
     if native_silu:
         dense_out = _apply_native_silu(dense_out)
@@ -334,6 +354,12 @@ def _make_optimized_causal_conv1d_fn(
     native_fn: Callable,
 ) -> Callable:
     single_supported = _native_api_supported(native_fn)
+    try:
+        native_metadata = {"seqlens", "has_initial_state"}.issubset(
+            inspect.signature(native_fn).parameters
+        )
+    except (TypeError, ValueError):
+        native_metadata = False
 
     @functools.wraps(upstream_fn)
     def optimized_causal_conv1d_fn_npu(
@@ -375,6 +401,7 @@ def _make_optimized_causal_conv1d_fn(
                 conv_states,
                 activation,
                 metadata,
+                native_metadata=native_metadata,
             )
         return upstream_fn(
             x,

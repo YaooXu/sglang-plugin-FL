@@ -11,6 +11,7 @@ import importlib.util
 import itertools
 import os
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -127,13 +128,34 @@ class TestAscendCausalConvDecodeFused(unittest.TestCase):
         self.assertFalse(self.mod._supported(x, states, layer, batch, indices))
 
     def test_installer_contract_and_custom_dispatch(self):
-        from sglang.srt.hardware_backend.npu.attention import (
-            ascend_gdn_backend as backend,
-        )
+        # Test the installer ABI without importing SGLang's full attention stack
+        # (and registering unrelated FLA autotuners in this unit test).
+        class Backend:
+            def forward_decode(self, layer, forward_batch, mixed_qkv, a, b, **kwargs):
+                conv_states = self.req_to_token_pool.mamba2_layer_cache(
+                    layer.layer_id
+                ).conv[0]
+                conv_states_tmp = conv_states.transpose(1, 2).clone()
+                conv_states[:] = conv_states_tmp.transpose(1, 2)
 
+        torch_causal_conv1d_update_npu = mock.Mock()
+
+        def causal_conv1d_update(conv_state, conv_state_indices):
+            conv_state_update = conv_state[conv_state_indices]
+            return torch_causal_conv1d_update_npu(conv_state_update)
+
+        class Replay:
+            def _replay_metadata(self, bs, num_padding):
+                req_pool_indices, mamba_indices = self.indices
+                req_pool_indices[bs - num_padding :] = 0
+                mamba_indices[bs - num_padding :] = 0
+
+        backend = SimpleNamespace(
+            AscendGDNAttnBackend=Backend,
+            causal_conv1d_update=causal_conv1d_update,
+            AscendMambaAttnBackendBase=Replay,
+        )
         original = backend.AscendGDNAttnBackend.forward_decode
-        if getattr(original, self.mod._MARKER, False):
-            original = original.__wrapped__
         env = {
             "SGLANG_FL_FUSED_CONV_DECODE": "1",
             "USE_FLAGGEMS": "1",
@@ -141,6 +163,14 @@ class TestAscendCausalConvDecodeFused(unittest.TestCase):
             "SGLANG_FL_FLAGOS_BLACKLIST": "sum_dim,mul",
         }
         with (
+            mock.patch.dict(
+                sys.modules,
+                {
+                    "sglang.srt.hardware_backend.npu.attention": SimpleNamespace(
+                        ascend_gdn_backend=backend
+                    )
+                },
+            ),
             mock.patch.dict(os.environ, env),
             mock.patch.object(backend.AscendGDNAttnBackend, "forward_decode", original),
         ):

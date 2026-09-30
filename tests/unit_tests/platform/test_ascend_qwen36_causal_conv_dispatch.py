@@ -118,9 +118,51 @@ def test_unavailable_native_signature_preserves_batched_fast_path():
     stock.assert_called_once()
 
 
-def test_installer_rebinds_early_and_late_aliases_without_stacking():
-    import sgl_kernel_npu.mamba as mamba
+def test_metadata_native_api_batches_and_keeps_single_fallback(cpu_causal_conv):
+    calls = []
 
+    def native(
+        x,
+        weight,
+        bias=None,
+        seqlens=None,
+        has_initial_state=None,
+        initial_states=None,
+        return_final_states=False,
+        activation="silu",
+    ):
+        calls.append((seqlens, has_initial_state))
+        assert torch.equal(seqlens, torch.full((2,), 3, dtype=torch.int32))
+        assert torch.equal(
+            has_initial_state, torch.full((2,), initial_states is not None)
+        )
+        return cpu_causal_conv(
+            x, weight, bias, initial_states, return_final_states, activation=activation
+        )
+
+    stock = mock.Mock(return_value="fallback")
+    optimized = conv._make_optimized_causal_conv1d_fn(stock, native)
+    for initial in (False, True):
+        args = _inputs(2, initial)
+        result = optimized(**args)
+        expected, _ = cpu_causal_conv(
+            args["x"][:, :3],
+            args["weight"],
+            initial_states=torch.zeros(1, 4096, 3, dtype=torch.bfloat16)
+            if initial
+            else None,
+        )
+        assert torch.equal(result, torch.cat((expected, expected), dim=-1))
+        assert torch.all(args["conv_states"][:2] == 1)
+        assert not torch.count_nonzero(args["conv_states"][2:])
+    assert len(calls) == 2
+    stock.assert_not_called()
+    assert optimized(**_inputs(1)) == "fallback"
+    stock.assert_called_once()
+    assert len(calls) == 2
+
+
+def test_installer_rebinds_early_and_late_aliases_without_stacking(mock_npu_mamba):
     for backend_loaded in (False, True):
         stock = lambda *args, **kwargs: None
         kernel = SimpleNamespace(
@@ -128,7 +170,7 @@ def test_installer_rebinds_early_and_late_aliases_without_stacking():
         )
         backend = SimpleNamespace(causal_conv1d_fn_npu=stock, causal_conv1d_fn=stock)
         with (
-            mock.patch.object(mamba, "causal_conv1d", kernel, create=True),
+            mock.patch.object(mock_npu_mamba, "causal_conv1d", kernel, create=True),
             mock.patch.dict(sys.modules),
         ):
             if backend_loaded:

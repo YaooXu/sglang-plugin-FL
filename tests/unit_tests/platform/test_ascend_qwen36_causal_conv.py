@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 import torch
 
 from sglang_fl.dispatch.backends.vendor.ascend.patches.qwen36_causal_conv import (
@@ -57,9 +59,7 @@ def _reference_per_sequence(
     return torch.cat(outputs, dim=-1)
 
 
-def _run_cpu_equivalence(use_initial_state: bool, trailing_tokens: int) -> None:
-    from sgl_kernel_npu.mamba.causal_conv1d import causal_conv1d_fn_native
-
+def _run_cpu_equivalence(native_fn, reference_fn, use_initial_state, trailing_tokens):
     torch.manual_seed(17)
     batch, dim, seq_len, width = 3, 8, 5, 4
     valid_tokens = batch * seq_len
@@ -73,7 +73,7 @@ def _run_cpu_equivalence(use_initial_state: bool, trailing_tokens: int) -> None:
     expected_states = base_states.clone()
     actual_states = base_states.clone()
     expected = _reference_per_sequence(
-        causal_conv1d_fn_native,
+        reference_fn,
         x[:, :valid_tokens],
         weight,
         query_start_loc,
@@ -86,7 +86,7 @@ def _run_cpu_equivalence(use_initial_state: bool, trailing_tokens: int) -> None:
 
     metadata = _BatchMetadata(batch, seq_len, valid_tokens, use_initial_state)
     actual = _run_equal_length_batched(
-        causal_conv1d_fn_native,
+        native_fn,
         x,
         weight,
         None,
@@ -94,6 +94,7 @@ def _run_cpu_equivalence(use_initial_state: bool, trailing_tokens: int) -> None:
         actual_states,
         "silu",
         metadata,
+        native_metadata="seqlens" in inspect.signature(native_fn).parameters,
     )
 
     assert torch.equal(actual, expected)
@@ -102,12 +103,16 @@ def _run_cpu_equivalence(use_initial_state: bool, trailing_tokens: int) -> None:
         assert torch.count_nonzero(actual[:, valid_tokens:]) == 0
 
 
-def test_batched_path_matches_without_initial_state() -> None:
-    _run_cpu_equivalence(use_initial_state=False, trailing_tokens=0)
+def test_batched_path_matches_without_initial_state(
+    native_causal_conv, cpu_causal_conv
+):
+    _run_cpu_equivalence(native_causal_conv, cpu_causal_conv, False, 0)
 
 
-def test_batched_path_matches_with_initial_state_and_tail_padding() -> None:
-    _run_cpu_equivalence(use_initial_state=True, trailing_tokens=2)
+def test_batched_path_matches_with_initial_state_and_tail_padding(
+    native_causal_conv, cpu_causal_conv
+):
+    _run_cpu_equivalence(native_causal_conv, cpu_causal_conv, True, 2)
 
 
 def _target_inputs(dim: int = 5120):

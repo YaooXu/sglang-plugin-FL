@@ -18,6 +18,7 @@ import sys
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
 import torch
 
 from sglang_fl.dispatch.backends.vendor.ascend.patches import (
@@ -132,9 +133,9 @@ def test_seq_lens_cpu_rejects_lossy_or_boolean_coercions():
         assert _get_single_sequence_metadata(*args) is None
 
 
-def _check_cpu_equivalence(use_initial_state: bool, tail: int):
-    from sgl_kernel_npu.mamba.causal_conv1d import causal_conv1d_fn_native
-
+def _check_cpu_equivalence(native_fn, reference_fn, use_initial_state, tail):
+    if not _native_api_supported(native_fn):
+        pytest.skip("SDK lacks direct final-state writeback; wrapper uses fallback")
     torch.manual_seed(23)
     dim, valid_tokens, width = 8, 7, 4
     x = torch.randn(dim, valid_tokens + tail, dtype=torch.bfloat16)
@@ -144,7 +145,7 @@ def _check_cpu_equivalence(use_initial_state: bool, tail: int):
     expected_states = states.clone()
     actual_states = states.clone()
     state = expected_states[1].unsqueeze(0)
-    expected, _ = causal_conv1d_fn_native(
+    expected, _ = reference_fn(
         x[..., :valid_tokens],
         weight,
         bias,
@@ -157,7 +158,7 @@ def _check_cpu_equivalence(use_initial_state: bool, tail: int):
         expected = torch.nn.functional.pad(expected, (0, tail))
 
     actual = _run_single_sequence(
-        causal_conv1d_fn_native,
+        native_fn,
         x,
         weight,
         bias,
@@ -171,12 +172,16 @@ def _check_cpu_equivalence(use_initial_state: bool, tail: int):
         assert torch.count_nonzero(actual[..., valid_tokens:]) == 0
 
 
-def test_output_and_state_match_without_initial_state():
-    _check_cpu_equivalence(False, 0)
+def test_output_and_state_match_without_initial_state(
+    native_causal_conv, cpu_causal_conv
+):
+    _check_cpu_equivalence(native_causal_conv, cpu_causal_conv, False, 0)
 
 
-def test_output_and_state_match_with_initial_state_and_tail_padding():
-    _check_cpu_equivalence(True, 3)
+def test_output_and_state_match_with_initial_state_and_tail_padding(
+    native_causal_conv, cpu_causal_conv
+):
+    _check_cpu_equivalence(native_causal_conv, cpu_causal_conv, True, 3)
 
 
 def test_target_b1_wrapper_calls_native_once():
@@ -230,9 +235,7 @@ def test_target_b1_wrapper_calls_native_once():
     assert native_kwargs["activation"] == "silu"
 
 
-def test_native_api_missing_final_states_out_falls_back_only_for_single():
-    import sgl_kernel_npu.mamba as mamba
-
+def test_native_api_missing_final_states_out_falls_back_only_for_single(mock_npu_mamba):
     sentinel = object()
     calls = []
 
@@ -260,7 +263,7 @@ def test_native_api_missing_final_states_out_falls_back_only_for_single():
         causal_conv1d_fn=upstream,
     )
     with (
-        mock.patch.object(mamba, "causal_conv1d", causal_conv, create=True),
+        mock.patch.object(mock_npu_mamba, "causal_conv1d", causal_conv, create=True),
         mock.patch.dict(sys.modules, {_BACKEND_MODULE: backend}),
     ):
         assert not _native_api_supported(native_without_final_states_out)
@@ -302,9 +305,7 @@ def test_native_api_missing_final_states_out_falls_back_only_for_single():
         assert len(calls) == 1
 
 
-def test_patch_rebinds_loaded_backend_aliases_and_is_idempotent():
-    import sgl_kernel_npu.mamba as mamba
-
+def test_patch_rebinds_loaded_backend_aliases_and_is_idempotent(mock_npu_mamba):
     def upstream(*args, **kwargs):
         return None
 
@@ -329,7 +330,7 @@ def test_patch_rebinds_loaded_backend_aliases_and_is_idempotent():
         causal_conv1d_fn=upstream,
     )
     with (
-        mock.patch.object(mamba, "causal_conv1d", causal_conv, create=True),
+        mock.patch.object(mock_npu_mamba, "causal_conv1d", causal_conv, create=True),
         mock.patch.dict(sys.modules, {_BACKEND_MODULE: backend}),
     ):
         assert patch_qwen36_causal_conv_prefill() is True
