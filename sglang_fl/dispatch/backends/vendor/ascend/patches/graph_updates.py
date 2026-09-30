@@ -56,6 +56,19 @@ def patch_ascend_graph_updates():
                 "Serial NPU graph updates require the TorchNPU graph dispatch "
                 "update_stream interface (verified on torch_npu 2.10.0)."
             )
+        if diagnostics:
+            recorded = getattr(self, "_sglang_fl_recorded_shapes", set())
+            if shape_key not in recorded:
+                records = mode.graph_dispatch_records
+                logger.warning(
+                    "FL_NPU_GRAPH_RECORDS rank=%s shape=%s count=%s ops=%s",
+                    self._device_id,
+                    shape_key,
+                    len(records),
+                    [str(record.op_cache_entry) for record in records],
+                )
+                recorded.add(shape_key)
+                self._sglang_fl_recorded_shapes = recorded
         metadata = {}
         if diagnostics:
             lengths = seq_lens

@@ -12,6 +12,7 @@ import logging
 from .patches.attention_registry import patch_attn_backend_wrapper
 from .patches.graph_stages import patch_ascend_graph_stages
 from .patches.graph_updates import patch_ascend_graph_updates
+from .patches.hccl_tp import patch_ascend_tp_hccl_options
 from .patches.minimax_m3_image import (
     patch_minimax_m3_image_preprocess_device,
     patch_minimax_m3_vision_rope_compile,
@@ -43,6 +44,7 @@ def apply_ascend_patches() -> None:
     patch_pp_send_recv_order()
     patch_pp_launch_batch_sync()
     patch_attn_backend_wrapper()
+    patch_ascend_tp_hccl_options()
     patch_qwen_vl_processor()
     patch_ascend_torch_sampling()
     patch_ascend_graph_updates()
