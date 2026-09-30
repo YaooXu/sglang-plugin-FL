@@ -23,6 +23,7 @@ from .patches.minimax_m3_moe import (
     patch_minimax_m3_w8a8_moe_offsets,
     patch_minimax_m3_w8a8_quant_targets,
 )
+from .patches.profiler import patch_ascend_profiler_activity
 from .patches.qwen_vl_processor import patch_qwen_vl_processor
 from .patches.sampling import patch_ascend_torch_sampling
 from .patches.scheduler_pp import (
@@ -44,6 +45,7 @@ def apply_ascend_patches() -> None:
     patch_pp_send_recv_order()
     patch_pp_launch_batch_sync()
     patch_attn_backend_wrapper()
+    patch_ascend_profiler_activity()
     patch_ascend_tp_hccl_options()
     patch_qwen_vl_processor()
     patch_ascend_torch_sampling()
