@@ -15,6 +15,7 @@ from .patches.graph_updates import patch_ascend_graph_updates
 from .patches.hccl_tp import patch_ascend_tp_hccl_options
 from .patches.minimax_m3_image import (
     patch_minimax_m3_image_preprocess_device,
+    patch_minimax_m3_image_token_boundaries,
     patch_minimax_m3_vision_rope_compile,
 )
 from .patches.minimax_m3_indexer import patch_ascend_minimax_vector_indexer
@@ -57,7 +58,9 @@ def apply_ascend_patches() -> None:
     patch_minimax_m3_w8a8_moe_offsets()
     patch_minimax_m3_w8a8_quant_targets()
     patch_minimax_m3_image_preprocess_device()
+    patch_minimax_m3_image_token_boundaries()
     patch_minimax_m3_vision_rope_compile()
     patch_minimax_m3_kv_pool()
+
 
 apply_ascend_patches()
