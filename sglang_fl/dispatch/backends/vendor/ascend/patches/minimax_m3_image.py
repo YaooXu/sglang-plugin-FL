@@ -16,6 +16,8 @@ which supports at most eight dimensions. The upstream processor succeeds on
 CPU; its output is transferred to the model device by the normal MM path.
 """
 
+import hashlib
+import json
 import logging
 from functools import wraps
 
@@ -104,3 +106,72 @@ def patch_minimax_m3_image_token_boundaries() -> None:
     patched._sglang_fl_minimax_m3_image_boundaries_patch = True
     MiniMaxM3VLProcessor._expand_input_ids = patched
     logger.info("Preserving MiniMax image boundaries in native token prompts")
+
+
+def patch_minimax_m3_image_grid_cache_key() -> None:
+    """Scope raw image cache identities to the grid used by vision RoPE.
+
+    Equal flattened patches can describe different spatial grids. Feature-only
+    hashes alias these images even when their placeholder counts match.
+    """
+    import torch
+
+    from sglang.srt.managers.schedule_batch import (
+        Modality,
+        MultimodalInputFormat,
+    )
+    from sglang.srt.multimodal.processors.minimax_m3_vl import MiniMaxM3VLProcessor
+
+    original = MiniMaxM3VLProcessor._postprocess_mm_items_before_transport
+    if getattr(original, "_sglang_fl_minimax_m3_grid_cache_patch", False):
+        return
+    state_key = "_sglang_fl_minimax_m3_grid_cache"
+
+    @wraps(original)
+    def patched(self, mm_items, *, images):
+        items = original(self, mm_items, images=images)
+        for item in items:
+            feature = item.feature
+            grid = item.model_specific_data.get("image_grid_thw")
+            if (
+                item.modality != Modality.IMAGE
+                or item.format != MultimodalInputFormat.NORMAL
+                or item.precomputed_embeddings is not None
+                or not isinstance(feature, torch.Tensor)
+                or not feature.is_cpu
+                or not isinstance(grid, torch.Tensor)
+                or not grid.is_cpu
+                or grid.ndim != 2
+                or grid.shape[1] != 3
+            ):
+                continue
+            item.set_pad_value()
+            if item.hash is None:
+                continue
+            previous = item.model_specific_data.get(state_key)
+            base_hash = (
+                previous["base"]
+                if isinstance(previous, dict) and item.hash == previous.get("scoped")
+                else item.hash
+            )
+            payload = {
+                "version": "minimax-m3-image-grid-v1",
+                "feature_hash": base_hash,
+                "feature_dtype": str(feature.dtype),
+                "feature_shape": list(feature.shape),
+                "image_grid_thw": grid.tolist(),
+            }
+            digest = hashlib.sha256(
+                json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+            ).digest()
+            scoped_hash = int.from_bytes(digest[:8], "big")
+            item.set_hash(scoped_hash)
+            item.model_specific_data[state_key] = {
+                "base": base_hash,
+                "scoped": scoped_hash,
+            }
+        return items
+
+    patched._sglang_fl_minimax_m3_grid_cache_patch = True
+    MiniMaxM3VLProcessor._postprocess_mm_items_before_transport = patched
+    logger.info("Including MiniMax image grids in multimodal cache identities")
